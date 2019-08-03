@@ -8,6 +8,7 @@ from vqvae.envs.reacher import GoalReacher, GoalReacherNoTarget
 from vqvae.envs.pusher import GoalPusherNoTarget
 from vqvae.envs.utils import SimpleGoalEnv
 from vqvae.envs.utils import RefBlockEnv
+from vqvae.envs.stacker import RefTwoBlocksEnv, StackerGoalEnv
 
 from rlsink.oracles.path_collector import run_policy
 
@@ -141,6 +142,61 @@ class PusherDataGenerator:
         print('Saved output in:', output_dir + file_name)
 
 
+class StackerDataGenerator:
+
+    def __init__(self,
+                 path_length=100,
+                 num_paths=20,
+                 reward_type="place_sparse"
+                 ):
+
+        self.path_length = path_length
+        self.num_paths = num_paths
+        if reward_type == "place_sparse":
+            task = "just_place"
+        else:
+            task = "pick_and_place_sparse"
+        self.env = StackerGoalEnv(obs_dim=30, goal_dim=3, env_name='stacker', reward_type=reward_type,
+                                  task=task, max_steps=self.path_length)
+
+    def run_simulation(self, output_dir=''):
+        obs = self.env.reset()
+        data = {k: [] for k in obs}
+        data['image_observation'] = []
+        dir_ = '/home/misha/research/rlkit/data'
+        just_place_file = '/place-sparse-real-LSAC-aug1/place_sparse_real_LSAC_aug1_2019_08_01_09_57_54_0000--s-0/params.pkl'
+        file_name = just_place_file
+        render_kwargs = dict(width=64, height=64, camera_id=0)
+        for i in tqdm(range(self.num_paths)):
+            # each iteration do a random or learned policy
+            if i % 5 == 0:
+                # run learned policy
+                path, _ = run_policy(dir_+file_name, self.env, goal_env=True,
+                                     use_color=False, cherrypick=True, fixed_length=True, verbose=True, render_kwargs=render_kwargs)
+                for j, item in enumerate(path["observations"]):
+                    # to keep policy unbiased flip the images every other time
+                    item["image_observation"] = path["images"][j]
+
+                    for k, v in item.items():
+                        data[k].append(v.copy())
+            else:
+                obs = self.env.reset()
+
+                for j in range(self.path_length):
+                    a = self.env.action_space.sample()
+                    obs, _, _, _ = self.env.step(a)
+
+                    obs['image_observation'] = self.env.dm_env.physics.render(
+                        **render_kwargs)
+                    for k, v in obs.items():
+                        data[k].append(v.copy())
+
+        file_name = 'just_place_length' + \
+            str(self.path_length) + '_paths_' + str(self.num_paths)
+        np.save(output_dir + file_name, data)
+        print('Saved output in:', output_dir + file_name)
+
+
 class BlockDataGenerator:
 
     def __init__(self,
@@ -187,8 +243,82 @@ class BlockDataGenerator:
         print('Saved output in:', output_dir + file_name)
 
 
+class TwoBlocksDataGenerator:
+
+    def __init__(self,
+                 path_length=800,
+                 num_paths=20):
+
+        self.path_length = path_length
+        self.num_paths = num_paths
+        self.env = RefTwoBlocksEnv()
+
+    def run_simulation(self, output_dir=''):
+        self.env.reset()
+        data = {}
+        data['image_observation'] = []
+
+        render_kwargs = dict(width=64, height=64, camera_id=0)
+        for i in tqdm(range(self.num_paths)):
+            # each iteration do a random or learned policy
+            if i % 4 == 0:
+                self.env.reset()
+                for _ in range(self.path_length):
+
+                    n = np.random.randint(3)
+                    box0_pos, box1_pos = self.reset_boxes()
+                    box1_pos = self.env.data.geom_xpos["box1"].copy()
+
+                    if n == 0:
+                        self.env.set_block_pos(
+                            box0=[box1_pos[0]-self.env.box_size*2, None, self.env.box_size])
+                    if n == 1:
+                        self.env.set_block_pos(
+                            box0=[box1_pos[0]+self.env.box_size*2, None, self.env.box_size])
+                    if n == 2:
+                        self.env.set_block_pos(
+                            box0=[box1_pos[0], None, self.env.box_size*3])
+
+                    img = self.env.dm_env.physics.render(
+                        **render_kwargs)
+                    data['image_observation'].append(img)
+            else:
+                self.env.reset()
+                for _ in range(self.path_length):
+                    flat = np.random.randint(4) == 0
+                    distance = 0
+                    while distance < 0.05:
+                        box0_pos, box1_pos = self.reset_boxes(flat=flat)
+                        distance = np.linalg.norm(
+                            np.array(box0_pos)-np.array(box1_pos))
+
+                    self.env.set_block_pos(box0=box0_pos,
+                                           box1=box1_pos)
+                    img = self.env.dm_env.physics.render(
+                        **render_kwargs)
+                    data['image_observation'].append(img)
+
+        file_name = 'two_blocks_length' + \
+            str(self.path_length) + '_paths_' + str(self.num_paths)
+        np.save(output_dir + file_name, data)
+        print('Saved output in:', output_dir + file_name)
+
+    def reset_boxes(self, flat=False):
+        if flat:
+            box0_pos = [
+                np.random.uniform(-.37, .37), 0.001, self.env.box_size]
+        else:
+            box0_pos = [
+                np.random.uniform(-.52, .52), 0.001, np.random.uniform(self.env.box_size, self.env.box_size+.88)]
+        box1_pos = [
+            np.random.uniform(-.37, .37), 0.001, self.env.box_size]
+
+        return box0_pos, box1_pos
+
+
 if __name__ == "__main__":
     output_dir = '/home/misha/research/vqvae/data/'
-    collector = BlockDataGenerator(path_length=100, num_paths=100)
+    #collector = TwoBlocksDataGenerator(path_length=100, num_paths=100)
+    collector = StackerDataGenerator(path_length=100, num_paths=400)
     collector.run_simulation(output_dir)
     print('done')
