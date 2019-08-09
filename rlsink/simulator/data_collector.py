@@ -58,7 +58,7 @@ class ReacherDataGenerator:
 
     def __init__(self,
                  path_length=100,
-                 num_paths=50,
+                 num_paths=100,
                  env_name='reacher',
                  mode='easy'):
 
@@ -167,9 +167,12 @@ class StackerDataGenerator:
         just_place_file = '/place-sparse-real-LSAC-aug1/place_sparse_real_LSAC_aug1_2019_08_01_09_57_54_0000--s-0/params.pkl'
         file_name = just_place_file
         render_kwargs = dict(width=64, height=64, camera_id=0)
+
+        path_type = ["random", "place", "pick"]
         for i in tqdm(range(self.num_paths)):
             # each iteration do a random or learned policy
-            if i % 5 == 0:
+            path_type = i % 3
+            if path_type == 0:
                 # run learned policy
                 path, _ = run_policy(dir_+file_name, self.env, goal_env=True,
                                      use_color=False, cherrypick=True, fixed_length=True, verbose=True, render_kwargs=render_kwargs)
@@ -179,6 +182,27 @@ class StackerDataGenerator:
 
                     for k, v in item.items():
                         data[k].append(v.copy())
+            elif path_type == 1:
+                dm_env = suite.load('stacker', 'pick_and_place')
+
+                def set_magnet_state(dm_env, magnet_state=1):
+                    current_pos = dm_env.physics.named.data.qpos.copy()
+                    with dm_env.physics.reset_context():
+                        for i in range(len(current_pos)):
+                            dm_env.physics.named.data.qpos[i] = current_pos[i]
+                        dm_env.physics.named.model.eq_active[0] = magnet_state
+
+                dm_env.reset()
+                set_magnet_state(dm_env, 0)
+                imgs = []
+                for _ in range(self.path_length):
+                    a = np.random.uniform(-1, 1, dm_env.action_spec().shape)
+                    dm_env.step(a)
+                    img = dm_env.physics.render(**render_kwargs)
+                    imgs.append(img)
+                for x in imgs:
+                    data["image_observation"].append(x)
+
             else:
                 obs = self.env.reset()
 
@@ -191,7 +215,7 @@ class StackerDataGenerator:
                     for k, v in obs.items():
                         data[k].append(v.copy())
 
-        file_name = 'just_place_length' + \
+        file_name = 'pick_place_length' + \
             str(self.path_length) + '_paths_' + str(self.num_paths)
         np.save(output_dir + file_name, data)
         print('Saved output in:', output_dir + file_name)
@@ -319,6 +343,6 @@ class TwoBlocksDataGenerator:
 if __name__ == "__main__":
     output_dir = '/home/misha/research/vqvae/data/'
     #collector = TwoBlocksDataGenerator(path_length=100, num_paths=100)
-    collector = StackerDataGenerator(path_length=100, num_paths=400)
+    collector = StackerDataGenerator(path_length=100, num_paths=50)
     collector.run_simulation(output_dir)
     print('done')
