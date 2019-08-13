@@ -87,11 +87,10 @@ class CPCSampler(Sampler):
         return len(self.data_source)
 
 
-device = torch.device(
-    "cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
-def vqvae_encoder_for_cpc(x, model):
+def vqvae_encoder_for_cpc(x, model,device):
+
     x = x.to(device)
     z = model.pre_quantization_conv(model.encoder(x))
     return z
@@ -104,6 +103,7 @@ class CPC(nn.Module):
                  cpc_batch=None,
                  batch_size=None,
                  loader=None,
+                 gpu_id=0
                  ):
         super(CPC, self).__init__()
 
@@ -117,7 +117,7 @@ class CPC(nn.Module):
         self.z_dim = z_dim
 
         self.device = torch.device(
-            "cuda") if torch.cuda.is_available() else torch.device("cpu")
+            "cuda:"+str(gpu_id)) if torch.cuda.is_available() else torch.device("cpu")
 
         self.W = nn.Parameter(torch.rand(z_dim, z_dim), requires_grad=True)
 
@@ -126,20 +126,6 @@ class CPC(nn.Module):
         assert self.cpc_batch is not None
         assert self.batch_size is not None
         assert self.loader is not None
-
-    def forward(self, z_i, z_j):
-        batch_size = z_i.shape[0]
-        cpc_batch_size = z_j.shape[0]
-        z_dim = z_i.shape[-1]
-
-        z_i = z_i.view(z_dim, batch_size)
-
-        right = torch.matmul(self.W, z_i)
-        f = torch.bmm(z_j.view(batch_size, cpc_batch_size, z_dim),
-                      right.view(batch_size, z_dim, 1))
-        f_scores = f.squeeze(2)/1000
-
-        return f_scores
 
     def naive_loss(self, z_t, z_others, verbose=False):
         # maybe try making z
@@ -178,50 +164,82 @@ class CPC(nn.Module):
         z2 = z2.view(-1, 128)
         return torch.exp(torch.matmul(torch.matmul(z2, self.W), z1).squeeze(0)/1000)
 
-    def loss(self, z_i, z_j, verbose=False):
+    def loss(self, z, z_others, verbose=False):
         batch_size = 32  # z_i.shape[0]
         cpc_batch_size = 51  # z_j.shape[0]
         z_dim = 128  # z_i.shape[-1]
 
-        z_i = z_i.view(z_dim, batch_size)
+        z = z.view(batch_size,z_dim,1) #.repeat(1,1,batch_size)
+        z_others = z_others.view(batch_size,cpc_batch_size,z_dim)
+        z_pos = z_others[:,:1,:]
+        z_neg = z_others
+        repeated_w = self.W.unsqueeze(2).repeat(1,1,batch_size).permute(2,0,1)
+        
+        def log_sum_exp_batch(arr):
+            max_arr = torch.max(arr,1,keepdim=True).values
+            #max_arr = torch.max(arr)
+            #print(max_arr.shape)
+            #print(torch.log(torch.sum(torch.exp(arr),1)).shape)
+            #print(arr.shape)
+            return max_arr + torch.log(torch.sum(torch.exp(arr - max_arr),1))
 
-        right = torch.matmul(self.W, z_i)
-        f = torch.bmm(z_j.view(batch_size, cpc_batch_size, z_dim),
-                      right.view(batch_size, z_dim, 1))
-        f = f.squeeze(2)/1000
+        
+        z_pos_W_z = torch.bmm(z_pos,torch.bmm(repeated_w,z)).squeeze(2)
+        z_neg_W_z = torch.bmm(z_neg,torch.bmm(repeated_w,z)).squeeze(2)
 
-        f_pos = torch.exp(f[:, 0])
-        f_sums = torch.sum(torch.exp(f), dim=1)
-        loss = -torch.log(f_pos / f_sums)
-        loss = torch.mean(loss)
+        log_exp_f_neg = log_sum_exp_batch(z_neg_W_z)
+        log_exp_f_pos = torch.log(torch.exp(z_pos_W_z).squeeze(1))   
+        loss = torch.mean(log_exp_f_neg - log_exp_f_pos)
+        #print('log_exp_f_neg',torch.mean(log_exp_f_neg))
+        #print('log_exp_f_pos',torch.mean(log_exp_f_pos))
         if verbose:
-            print('z_i', z_i.shape)
-            print('z_j', z_j.shape)
-            print('f shape is:', f.shape, 'should be:',
-                  str([batch_size, cpc_batch_size]))
-            print('f_pos', f_pos.shape)
-            print('f_sums', print(f_sums.shape))
-            print('final loss', loss)
-
+            print('repeated w',repeated_w.shape)
+            print('z',z.shape)
+            print('z_pos w',z_pos.shape)
+            print('z_neg',z_neg.shape)
+            print('z_pos_W_z',z_pos_W_z.shape)
+            print('z_neg_W_z',z_neg_W_z.shape)
+            print('log_exp_f_neg',log_exp_f_neg.shape)
+            print('loss',loss)
+            
         return loss
+        
+    def forward(self, z_i, z_j):
+        batch_size = 32  # z_i.shape[0]
+        cpc_batch_size = 51  # z_j.shape[0]
+        z_dim = 128  # z_i.shape[-1]
+
+        z_i = z_i.view(batch_size,z_dim,1) #.repeat(1,1,batch_size)
+        z_j = z_j.view(batch_size,z_dim,1).permute(0,2,1)
+
+        repeated_w = self.W.unsqueeze(2).repeat(1,1,batch_size).permute(2,0,1)
+        
+        """ stopped here """
+        score = torch.bmm(z_j,torch.bmm(repeated_w,z_i)).squeeze(2)
+        print('score',score.shape)
+        assert False 
 
 
 def train_cpc():
     n_updates = 100000
-    lr = 3e-1
+    lr = 3e-2
     n = 100
     path_length = 100
     T = 10
     n_neg = 50
-    batch_size = 1
+    batch_size = 32
     cpc_batch_size = n_neg+2
-    cpc_model_path = '/home/misha/research/rlsink/saved/cpc_weights3.pth'
+    cpc_model_path = '/home/misha/downloads/rlsink/saved/cpc_weights3.pth'
     total_samples = batch_size*cpc_batch_size
+    gpu_id = 3
+
+    device = torch.device(
+    "cuda:"+str(gpu_id)) if torch.cuda.is_available() else torch.device("cpu")
 
     from rlsink.utils.data import load_data_and_data_loaders, load_model
 
-    data_file_path = '/home/misha/research/vqvae/data/reacher_no_target_length100_paths_2000.npy'
-    model_filename = '/home/misha/research/vqvae/results/vqvae_data_reacher_aug7_ne128nd2.pth'
+    data_file_path = '/home/misha/downloads/vqvae/data/reacher_no_target_length100_paths_50.npy'
+    model_filename = '/home/misha/downloads/vqvae/results/vqvae_data_reacher_aug11_ne128nd2.pth'
 
     model, _ = load_model(model_filename)
 
@@ -237,7 +255,10 @@ def train_cpc():
     cpc = CPC(z_dim=128,
               cpc_batch=52,
               batch_size=1,
-              loader=loader).cuda()
+              gpu_id=gpu_id,
+              loader=loader).to(device)
+
+    model = model.to(device)
 
     optimizer = optim.Adam(cpc.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -248,21 +269,21 @@ def train_cpc():
     for i in range(n_updates):
         x = next(iter(loader))[0]
         # print(x.shape)5
-        z = vqvae_encoder_for_cpc(x, model)
+        z = vqvae_encoder_for_cpc(x, model,device)
         z = z.reshape(cpc_batch_size, batch_size, -1)
         # print(z.shape)
         z_t = z[:1]
         z_others = z[1:]
         # print(z_t.shape,z_others.shape)
-        loss = cpc.naive_loss(z_t, z_others)
+        loss = cpc.loss(z_t, z_others)
 
         loss.backward()
         optimizer.step()
-        if i % 1000 == 0:
-            print('epoch', i//1000, 'loss', loss.detach().cpu().item())
+        if i % 10 == 0:
+            print('epoch', i, 'loss', loss.detach().cpu().item())
 
             torch.save(cpc.state_dict(), cpc_model_path)
-            scheduler.step()
+            #scheduler.step()
 
 
 if __name__ == "__main__":

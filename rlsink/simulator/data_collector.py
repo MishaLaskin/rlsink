@@ -341,8 +341,8 @@ class TwoBlocksDataGenerator:
 
 
 if __name__ == "__main__":
-    output_dir = '/home/misha/research/vqvae/data/'
+    output_dir = '/home/misha/downloads/vqvae/data/'
     #collector = TwoBlocksDataGenerator(path_length=100, num_paths=100)
-    collector = StackerDataGenerator(path_length=100, num_paths=50)
+    collector = ReacherDataGenerator(path_length=100, num_paths=2000)
     collector.run_simulation(output_dir)
     print('done')
