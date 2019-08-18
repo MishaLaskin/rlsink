@@ -207,10 +207,8 @@ if __name__ == "__main__":
     #    data_file_path, include_state=False)
     G, nodes = build_sptm_graph(data, model)
     now = datetime.now()
-
-    dt_string = ""  # now.strftime("%m/%d/%Y %H:%M")
+    dt_string = now.strftime("%m/%d/%Y %H:%M")
     filename = '/home/misha/research/rlsink/saved/reacher_graph.pkl'
 
     obj = {'graph': G, 'nodes': nodes}
-    #filehandler = open(filename + '_'+dt_string+'.obj', 'w')
     save_object(obj, filename)
